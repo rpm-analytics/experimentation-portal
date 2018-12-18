@@ -1,0 +1,174 @@
+DROP TABLE IF EXISTS photobox_tmp.test_exp_analysis_f;
+CREATE TABLE photobox_tmp.test_exp_analysis_f
+(
+	fullvisitorId NUMERIC(22) NOT NULL
+	, allocation_ts TIMESTAMP NOT NULL
+	, experiment_name VARCHAR(100) NOT NULL
+	, experiment_variant VARCHAR(100) NOT NULL
+	, country VARCHAR(255)
+	, device VARCHAR(255)
+	, has_multiple_variants INTEGER NOT NULL
+	, has_order INTEGER NOT NULL
+	, sales_gbp_esev DECIMAL(10,3)
+	, sales_gbp_isev DECIMAL(10,3)
+	, revenue_gbp_esev DECIMAL(10,3)
+	, revenue_gbp_isev DECIMAL(10,3)
+	, product_cogs_gbp DECIMAL(10,3)
+	, shipping_cogs_gbp DECIMAL(10,3)
+	, margin_product_gbp DECIMAL(10,3)
+	, margin_shipping_gbp DECIMAL(10,3)
+)
+DISTKEY(fullvisitorId)
+SORTKEY(allocation_ts)
+;
+
+COMMENT ON TABLE photobox_tmp.test_exp_analysis_f IS 'This table contains one row per allocation event enriched with order data as well as a flag for whether the user was exposed to multiple variants.';
+
+INSERT INTO photobox_tmp.test_exp_analysis_f
+SELECT a.fullvisitorId
+, a.allocation_ts
+, a.experiment_name
+, a.experiment_variant
+, a.country
+, a.device
+, CASE WHEN b.fullvisitorId IS NOT NULL THEN 1 ELSE 0 END AS has_multiple_variants
+, CASE WHEN MAX(COALESCE(c.order_id,0)) > 0 THEN 1 ELSE 0 END AS has_order
+, SUM(COALESCE(c.sales_gbp_esev,0)) AS sales_gbp_esev
+, SUM(COALESCE(c.sales_gbp_isev,0)) AS sales_gbp_isev
+, SUM(COALESCE(c.revenue_gbp_esev,0)) AS revenue_gbp_esev
+, SUM(COALESCE(c.revenue_gbp_isev,0)) AS revenue_gbp_isev
+, SUM(COALESCE(c.product_cogs_gbp,0)) AS product_cogs_gbp
+, SUM(COALESCE(c.shipping_cogs_gbp,0)) AS shipping_cogs_gbp
+, SUM(COALESCE(c.margin_product_gbp,0)) AS margin_product_gbp
+, SUM(COALESCE(c.margin_shipping_gbp,0)) AS margin_shipping_gbp
+FROM 
+(
+    SELECT a1.* 
+    FROM photobox_tmp.test_exp_allocs_f a1
+    WHERE date(a1.allocation_ts) <= current_date - 2
+) a
+LEFT JOIN
+(
+	SELECT b1.fullvisitorId
+	, b1.experiment_name
+	, COUNT(DISTINCT b2.experiment_variant) AS num_variants
+	FROM photobox_tmp.test_exp_allocs_f b1
+	JOIN photobox_tmp.test_exp_experiment_events_f b2
+	ON b1.fullvisitorId = b2.fullvisitorId
+	AND b1.experiment_name = b2.experiment_name
+	AND b2.event_ts BETWEEN b1.allocation_ts AND b1.allocation_ts + INTERVAL '1 WEEK'
+	GROUP BY 1,2
+	HAVING COUNT(DISTINCT b2.experiment_variant) > 1
+) b
+ON a.fullvisitorId = b.fullvisitorId
+ANd a.experiment_name = b.experiment_name
+LEFT JOIN
+(
+	SELECT c1.fullvisitorId
+	, c1.experiment_name
+	, c2.order_id
+	, c2.sales_gbp_esev
+	, c2.sales_gbp_isev
+	, c2.revenue_gbp_esev
+	, c2.revenue_gbp_isev
+	, c2.product_cogs_gbp
+	, c2.shipping_cogs_gbp
+	, c2.margin_product_gbp
+	, c2.margin_shipping_gbp
+	FROM photobox_tmp.test_exp_allocs_memid_f c1
+	JOIN photobox_tmp.test_exp_orders_f c2
+	ON c1.member_id = c2.member_id
+	JOIN
+	( SELECT * FROM photobox_tmp.test_exp_experiment_runs_d WHERE include_in_analysis = 1 ) c3
+	ON (
+	    c1.experiment_name = c3.experiment_name
+	AND c2.order_ts BETWEEN c1.allocation_ts AND c1.allocation_ts + INTERVAL '1 WEEK'
+	AND c3.is_hard_stop = 0)
+	OR (
+	    c1.experiment_name = c3.experiment_name
+	AND c2.order_ts BETWEEN c1.allocation_ts AND c3.end_ts
+	AND c3.is_hard_stop = 1)
+	WHERE c1.mem_id_nbr <= 3
+) c
+ON a.fullvisitorId = c.fullvisitorId
+AND a.experiment_name = c.experiment_name
+GROUP BY 1,2,3,4,5,6,7
+;
+
+ANALYZE photobox_tmp.test_exp_analysis_f;
+
+
+
+
+DROP TABLE IF EXISTS photobox_tmp.test_exp_analysis_d;
+CREATE TABLE photobox_tmp.test_exp_analysis_d
+(
+	experiment_name VARCHAR(100) NOT NULL
+	, experiment_variant VARCHAR(100) NOT NULL
+	, variant_id SMALLINT NOT NULL
+	, allocation_date DATE NOT NULL
+	, country VARCHAR(100) NOT NULL
+	, device VARCHAR(100) NOT NULL
+	, multiple_variant_user INTEGER NOT NULL
+	, run_seq INTEGER NOT NULL
+	, include_in_analysis INTEGER NOT NULL
+	, num_users BIGINT NOT NULL
+	, num_customers BIGINT NOT NULL
+	, sum_sales_gbp_esev DECIMAL(30,3) NOT NULL
+	, sum_sales_gbp_esev_sq DECIMAL(30,3) NOT NULL
+	, sum_sales_gbp_isev DECIMAL(30,3) NOT NULL
+	, sum_sales_gbp_isev_sq DECIMAL(30,3) NOT NULL
+	, sum_revenue_gbp_esev DECIMAL(30,3) NOT NULL
+	, sum_revenue_gbp_esev_sq DECIMAL(30,3) NOT NULL
+	, sum_revenue_gbp_isev DECIMAL(30,3) NOT NULL
+	, sum_revenue_gbp_isev_sq DECIMAL(30,3) NOT NULL
+	, sum_product_cogs_gbp DECIMAL(30,3) NOT NULL
+	, sum_product_cogs_gbp_sq DECIMAL(30,3) NOT NULL
+	, sum_shipping_cogs_gbp DECIMAL(30,3) NOT NULL
+	, sum_shipping_cogs_gbp_sq DECIMAL(30,3) NOT NULL
+	, sum_margin_product_gbp DECIMAL(30,3) NOT NULL
+	, sum_margin_product_gbp_sq DECIMAL(30,3) NOT NULL
+	, sum_margin_shipping_gpb DECIMAL(30,3) NOT NULL
+	, sum_margin_shipping_gpb_sq DECIMAL(30,3) NOT NULL
+)
+;
+
+INSERT INTO photobox_tmp.test_exp_analysis_d
+SELECT a.experiment_name
+, a.experiment_variant
+, c.variant_id
+, CAST(a.allocation_ts AS DATE)
+, COALESCE(a.country, 'unknown')
+, COALESCE(a.device, 'unknown')
+, a.has_multiple_variants
+, b.run_seq
+, b.include_in_analysis
+, COUNT(DISTINCT a.fullvisitorId)
+, SUM(a.has_order)
+, SUM(a.sales_gbp_esev)
+, SUM(a.sales_gbp_esev * a.sales_gbp_esev)
+, SUM(a.sales_gbp_isev)
+, SUM(a.sales_gbp_isev * a.sales_gbp_isev)
+, SUM(a.revenue_gbp_esev)
+, SUM(a.revenue_gbp_esev * a.revenue_gbp_esev)
+, SUM(a.revenue_gbp_isev)
+, SUM(a.revenue_gbp_isev * a.revenue_gbp_isev)
+, SUM(a.product_cogs_gbp)
+, SUM(a.product_cogs_gbp * a.product_cogs_gbp)
+, SUM(a.shipping_cogs_gbp)
+, SUM(a.shipping_cogs_gbp * a.shipping_cogs_gbp)
+, SUM(a.margin_product_gbp)
+, SUM(a.margin_product_gbp * a.margin_product_gbp)
+, SUM(a.margin_shipping_gbp)
+, SUM(a.margin_shipping_gbp * a.margin_shipping_gbp)
+FROM photobox_tmp.test_exp_analysis_f a
+JOIN photobox_tmp.test_exp_experiment_runs_d b
+ON a.experiment_name = b.experiment_name
+AND a.allocation_ts BETWEEN b.start_ts AND COALESCE(b.end_ts, '2020-12-31 23:59:59')
+JOIN photobox_tmp.test_exp_variant_d c
+ON a.experiment_name = c.experiment_name
+AND a.experiment_variant = c.experiment_variant
+GROUP BY 1,2,3,4,5,6,7,8,9
+;
+
+ANALYZE photobox_tmp.test_exp_analysis_d;
